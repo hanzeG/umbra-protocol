@@ -12,6 +12,7 @@
     "test": "yarn build && yarn hardhat test",
     "test-sh": "yarn build && yarn hardhat test test/StealthHub.test.ts",
     "test-b": "yarn build && yarn hardhat test test/bench.test.ts",
+    "test-u": "yarn build && yarn hardhat test test/Umbra.test.ts",
     "coverage": "yarn clean && yarn build && nyc yarn hardhat test && sed -i'.bak' 's/SF:/SF:umbra-js\\//gI' ./coverage/lcov.info",
     "lint": "eslint --ext .js,.ts ./",
     "prettier": "prettier --write .",
