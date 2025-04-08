@@ -6,7 +6,10 @@
     "outDir": "build",
     "resolveJsonModule": true,
     "forceConsistentCasingInFileNames": true,
-    "lib": ["es2015", "dom"],
+    "lib": [
+      "es2015",
+      "dom"
+    ],
     "moduleResolution": "node",
     "noEmitOnError": true,
     "noFallthroughCasesInSwitch": true,
@@ -14,9 +17,17 @@
     "sourceMap": true,
     "baseUrl": "./",
     "paths": {
-      "@sinonjs/fake-timers": ["../node_modules/@types/sinonjs__fake-timers"]
+      "@sinonjs/fake-timers": [
+        "../node_modules/@types/sinonjs__fake-timers"
+      ]
     },
-    "typeRoots": ["./node_modules/@types"]
+    "typeRoots": [
+      "./node_modules/@types"
+    ]
   },
-  "include": ["./src/**/*", "./src/**/*.json", "./types/**/*"]
+  "include": [
+    "./src/**/*",
+    "./src/**/*.json",
+    "./types/**/*"
+  ]
 }

@@ -37,7 +37,7 @@ import {
 } from '../utils/utils';
 import { Umbra as UmbraContract, Umbra__factory, ERC20__factory } from '../typechain';
 import { ETH_ADDRESS, UMBRA_BATCH_SEND_ABI } from '../utils/constants';
-import type { Announcement, ChainConfig, EthersProvider, ScanOverrides, SendOverrides, SubgraphAnnouncement, UserAnnouncement, AnnouncementDetail, SendBatch, SendData} from '../types'; // prettier-ignore
+import type { Announcement, ChainConfig, EthersProvider, ScanOverrides, SendOverrides, SubgraphAnnouncement, UserAnnouncement, AnnouncementDetail, SendBatch, SendData } from '../types'; // prettier-ignore
 
 // Mapping from chainId to contract information
 const umbraAddress = '0xFb2dc580Eed955B528407b4d36FfaFe3da685401'; // same on all supported networks
@@ -192,6 +192,7 @@ export class Umbra {
     recipientId: string,
     overrides: SendOverrides = {}
   ) {
+    // console.log('recipientId', recipientId);
     // Check that recipient is valid.
     await assertSupportedAddress(recipientId);
 
@@ -585,6 +586,9 @@ export class Umbra {
       const computedReceivingAddress = spendingKeyPair.mulPublicKey(randomNumber).address;
 
       // If our receiving address matches the event's recipient, the transfer was for the user with the specified keys
+      // console.log('viewingKeyPair', viewingKeyPair);
+      // console.log('spendingKeyPair', spendingKeyPair);
+      // console.log('computedReceivingAddress', computedReceivingAddress);
       return { isForUser: computedReceivingAddress === getAddress(receiver), randomNumber };
     } catch (err) {
       // We may reach here if people use the sendToken method improperly, e.g. by passing an invalid pkx, so we'd
@@ -647,6 +651,8 @@ export class Umbra {
   async prepareSend(recipientId: string, lookupOverrides: SendOverrides = {}) {
     // Lookup recipient's public key
     const { spendingPublicKey, viewingPublicKey } = await lookupRecipient(recipientId, this.provider, lookupOverrides);
+    // console.log('recipientId', recipientId);
+
     if (!spendingPublicKey || !viewingPublicKey) {
       throw new Error(`Could not retrieve public keys for recipient ID ${recipientId}`);
     }
