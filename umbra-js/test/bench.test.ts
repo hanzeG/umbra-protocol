@@ -250,8 +250,6 @@ function benchmarkIsAnnouncementForUser(umbra: Umbra, spendingPublicKey: string,
   }
 }
 
-
-
 // Example test case to benchmark each operation in prepareSend
 describe('Benchmark prepareSend Operations', function () {
   let sender: Wallet;

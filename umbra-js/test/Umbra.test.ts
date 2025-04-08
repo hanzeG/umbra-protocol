@@ -362,6 +362,22 @@ describe('Umbra class', () => {
           tx = result.tx;
           stealthKeyPairs = [result.stealthKeyPair];
           usedReceivers = [receiver];
+
+          console.log('Generated stealthKeyPair [spending public key only]:', result.stealthKeyPair);
+          console.log('Stealth address:', result.stealthKeyPair.address);
+
+          console.log('Sender address', sender!.address);
+          console.log('Receiver address', receiver!.address);
+
+          const sendReceipt = await ethers.provider.getTransactionReceipt(tx.hash);
+          console.log('-----------------------------------------------------');
+          console.log('Send transaction details:');
+          console.log('  To:', sendReceipt.to);
+          console.log('  From:', sendReceipt.from);
+          console.log('  Block Number:', sendReceipt.blockNumber);
+          console.log('  Gas Used:', sendReceipt.gasUsed.toString());
+          console.log('  Effective Gas Price:', sendReceipt.effectiveGasPrice ? sendReceipt.effectiveGasPrice.toString() : 'N/A');
+
         } else if (test.id === 'batchSend') {
           const sends: SendBatch[] = [];
           for (let i = 0; i < tokens.length; i++) {
@@ -389,7 +405,10 @@ describe('Umbra class', () => {
           // Withdraw (test withdraw by signature)
           const destinationWallet = ethers.Wallet.createRandom();
           const relayerWallet = ethers.Wallet.createRandom();
+          console.log('Relayer address', relayerWallet.address);
+          console.log('Destination wallet address', destinationWallet.address);
           const sponsorWallet = ethers.Wallet.createRandom();
+          console.log('Sponsor address', sponsorWallet.address);
           const sponsorFee = '2500';
 
           // Fund relayer to pay for gas.
@@ -414,7 +433,7 @@ describe('Umbra class', () => {
           );
 
           // Relay transaction
-          await umbra.withdrawOnBehalf(
+          const withdrawTx = await umbra.withdrawOnBehalf(
             relayerWallet,
             stealthKeyPair.address,
             destinationWallet.address,
@@ -425,6 +444,17 @@ describe('Umbra class', () => {
             r,
             s
           );
+          await withdrawTx.wait();
+          const withdrawReceipt = await ethers.provider.getTransactionReceipt(withdrawTx.hash);
+          console.log('-----------------------------------------------------');
+          console.log('Receiver is withdrawing funds from stealth address to destination wallet');
+          console.log('  To:', withdrawReceipt.to);
+          console.log('  From:', withdrawReceipt.from);
+          console.log('  Block Number:', withdrawReceipt.blockNumber);
+          console.log('  Gas Used:', withdrawReceipt.gasUsed.toString());
+          console.log('  Effective Gas Price:', withdrawReceipt.effectiveGasPrice ? withdrawReceipt.effectiveGasPrice.toString() : 'N/A');
+          const txCost = withdrawTx.gasLimit.mul(withdrawReceipt.effectiveGasPrice);
+
           const originalQuantity = test.id === 'send' ? quantity : amounts[i];
           const expectedAmountReceived = BigNumber.from(originalQuantity).sub(sponsorFee);
 

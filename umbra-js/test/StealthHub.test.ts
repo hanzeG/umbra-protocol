@@ -1,8 +1,7 @@
 import { ethers } from 'hardhat';
-import { BigNumberish } from 'ethers';
 import hardhatConfig from '../hardhat.config';
 import { Umbra } from '../src/classes/Umbra';
-import { BigNumber, StaticJsonRpcProvider, Wallet } from '../src/ethers';
+import { BigNumberish, BigNumber, StaticJsonRpcProvider, Wallet, ContractTransaction } from '../src/ethers';
 import { SignerWithAddress } from '@nomiclabs/hardhat-ethers/dist/src/signer-with-address';
 import { HardhatNetworkHDAccountsUserConfig } from 'hardhat/src/types/config';
 import { expect } from 'chai';
@@ -10,6 +9,8 @@ import type { ChainConfig } from '../src/types';
 import {
   Umbra as UmbraContract,
   Umbra__factory,
+  TestToken as ERC20,
+  TestToken__factory as ERC20__factory,
 } from '../src/typechain';
 import { UMBRA_BATCH_SEND_ABI } from '../src/utils/constants';
 import { KeyPair } from '../src';
@@ -26,13 +27,16 @@ const overrides = { supportPubKey: true }; // we directly enter a pubkey in thes
 const senderIndex = 2;
 const receiverIndex = 3;
 
-describe('ETH Relayer Withdraw Test', function () {
+describe('Umbra ETH/Token Transfer Test', function () {
   let sender: Wallet;
   let receiver: Wallet;
   let receivers: Wallet[] = [];
   let deployer: SignerWithAddress;
   let umbra: Umbra;
   let chainConfig: ChainConfig;
+
+  let dai: ERC20;
+  let usdc: ERC20;
 
   const getEthBalance = async (address: string) => {
     return (await ethersProvider.getBalance(address)).toString();
@@ -59,7 +63,9 @@ describe('ETH Relayer Withdraw Test', function () {
 
     // Load other signers
     deployer = (await ethers.getSigners())[0]; // used for deploying contracts
+  });
 
+  beforeEach(async () => {
     // Deploy Umbra
     console.log('------------------------- DEPLOY ----------------------------');
     const toll = parseEther('0.1');
@@ -70,6 +76,16 @@ describe('ETH Relayer Withdraw Test', function () {
     await umbraContract.deployTransaction.wait();
     console.log('Deployed Umbra contract address:', umbraContract.address);
 
+    // Deploy mock tokens
+    const daiFactory = new ERC20__factory(deployer);
+    dai = (await daiFactory.deploy('Dai', 'DAI')) as ERC20;
+    await dai.deployTransaction.wait();
+
+    // Deploy different mock tokens for batch send tests
+    const usdcFactory = new ERC20__factory(deployer);
+    usdc = (await usdcFactory.deploy('usdc', 'USDC')) as ERC20;
+    await usdc.deployTransaction.wait();
+
     // Deploy UmbraBatchSend
     const batchSendFactory = new ethers.ContractFactory(
       UMBRA_BATCH_SEND_ABI,
@@ -79,6 +95,11 @@ describe('ETH Relayer Withdraw Test', function () {
     const batchSendContract = await batchSendFactory.deploy(umbraContract.address);
     await batchSendContract.deployTransaction.wait();
     console.log('Deployed UmbraBatchSend contract address:', batchSendContract.address);
+
+
+    // Approve tokens
+    await batchSendContract.connect(deployer).approveToken(dai.address);
+    await batchSendContract.connect(deployer).approveToken(usdc.address);
 
     // Get chainConfig based on most recent Sepolia block number to minimize scanning time
     const lastBlockNumber = await ethersProvider.getBlockNumber();
@@ -94,6 +115,18 @@ describe('ETH Relayer Withdraw Test', function () {
     umbra = new Umbra(ethersProvider, chainConfig);
   });
 
+  beforeEach(() => {
+    // Seems we somehow lose the provider attached to our sender, so make sure it's there. Without this
+    // some tests below throw with "Error: missing provider (operation="sendTransaction", code=UNSUPPORTED_OPERATION, version=abstract-signer/5.0.12)"
+    sender = sender.connect(ethers.provider);
+  });
+
+  const mintAndApproveToken = async (signer: Wallet, user: string, token: ERC20, amount: BigNumber) => {
+    await token.connect(signer).mint(user, amount);
+    await token.connect(signer).approve(umbra.umbraContract.address, ethers.constants.MaxUint256);
+    await token.connect(signer).approve(umbra.batchSendContract.address, ethers.constants.MaxUint256);
+  };
+
   it('should send ETH, scan for it, and withdraw it via relayer', async function () {
     let stealthKeyPairs: KeyPair[] = [];
     let usedReceivers: Wallet[] = [];
@@ -101,6 +134,9 @@ describe('ETH Relayer Withdraw Test', function () {
     const receiverInitialBalance = await getEthBalance(receiver.address);
     console.log('Initial Sender balance:', ethers.utils.formatEther(senderInitialBalance), 'ETH');
     console.log('Initial Receiver balance:', ethers.utils.formatEther(receiverInitialBalance), 'ETH');
+    const umbraBalanceInitial = await ethersProvider.getBalance(chainConfig.umbraAddress);
+    console.log('Initial Umbra contract balance:', ethers.utils.formatEther(umbraBalanceInitial), 'ETH');
+
 
     // SENDER
     // Send funds with Umbra
@@ -128,6 +164,9 @@ describe('ETH Relayer Withdraw Test', function () {
     console.log('Sender balance after send:', ethers.utils.formatEther(senderBalanceAfterSend), 'ETH');
     console.log('Stealth address balance after send:', ethers.utils.formatEther(stealthBalanceAfterSend), 'ETH');
     console.log('Umbra contract balance after send:', ethers.utils.formatEther(umbraBalanceAfterSend), 'ETH');
+    const receiverBalanceAfterSend = await getEthBalance(receiver.address);
+    console.log('Receiver balance after send:', ethers.utils.formatEther(receiverBalanceAfterSend), 'ETH');
+
     // console.log('Send transaction receipt:', sendReceipt);
     console.log('-----------------------------------------------------');
     console.log('Send transaction details:');
@@ -149,7 +188,7 @@ describe('ETH Relayer Withdraw Test', function () {
 
       // RECEIVER
       // Receiver scans for funds send to them
-      console.log('-------------------------SCAN----------------------------');
+      console.log('------------------------- SCAN ----------------------------');
       console.log('Receiver:', receiver.address, 'is scanning for funds with receiver viewing private key');
       const { userAnnouncements } = await umbra.scan(receiver.publicKey, receiver.privateKey);
       console.log('-----------------------------------------------------');
@@ -168,32 +207,185 @@ describe('ETH Relayer Withdraw Test', function () {
       console.log('Receiver stealth private key: ', stealthPrivateKey);
       console.log('-----------------------------------------------------');
       console.log('Receiver stealth address: ', stealthKeyPair.address);
-      console.log('-------------------------WITHDRAW----------------------------');
+      console.log('------------------------- WITHDRAW ----------------------------');
       const withdrawTx = await umbra.withdraw(stealthPrivateKey, 'ETH', destinationWallet.address);
       await withdrawTx.wait();
       const withdrawReceipt = await ethers.provider.getTransactionReceipt(withdrawTx.hash);
-      const destinationBalanceAfterWithdraw = await getEthBalance(destinationWallet.address);
-      const senderBalanceAfterWithdraw = await getEthBalance(sender.address);
-      const receiverBalanceAfterWithdraw = await getEthBalance(receiver.address);
-      const stealthBalanceAfterWithdraw = await getEthBalance(stealthKeyPair.address);
-      const umbraBalanceAfterWithdraw = await ethersProvider.getBalance(chainConfig.umbraAddress);
-      console.log('Sender balance after withdrawal:', ethers.utils.formatEther(senderBalanceAfterWithdraw), 'ETH');
-      console.log('Receiver balance after withdrawal:', ethers.utils.formatEther(receiverBalanceAfterWithdraw), 'ETH');
-      console.log('Stealth address balance after withdrawal:', ethers.utils.formatEther(stealthBalanceAfterWithdraw), 'ETH');
-      console.log('Destination wallet balance after withdrawal:', ethers.utils.formatEther(destinationBalanceAfterWithdraw), 'ETH');
-      console.log('Umbra contract balance after withdrawal:', ethers.utils.formatEther(umbraBalanceAfterWithdraw), 'ETH');
       // console.log('Withdrawal transaction receipt:', withdrawReceipt);
-
       console.log('Receiver is withdrawing funds from stealth address to destination wallet');
       console.log('  To:', withdrawReceipt.to);
       console.log('  From:', withdrawReceipt.from);
       console.log('  Block Number:', withdrawReceipt.blockNumber);
       console.log('  Gas Used:', withdrawReceipt.gasUsed.toString());
       console.log('  Effective Gas Price:', withdrawReceipt.effectiveGasPrice ? withdrawReceipt.effectiveGasPrice.toString() : 'N/A');
+
+
+      const senderBalanceAfterWithdraw = await getEthBalance(sender.address);
+      const receiverBalanceAfterWithdraw = await getEthBalance(receiver.address);
+      const stealthBalanceAfterWithdraw = await getEthBalance(stealthKeyPair.address);
+      const destinationBalanceAfterWithdraw = await getEthBalance(destinationWallet.address);
+      const umbraBalanceAfterWithdraw = await ethersProvider.getBalance(chainConfig.umbraAddress);
+      console.log('Final ETH balances after withdrawal:');
+      console.log('Sender:', ethers.utils.formatEther(senderBalanceAfterWithdraw), 'ETH');
+      console.log('Receiver:', ethers.utils.formatEther(receiverBalanceAfterWithdraw), 'ETH');
+      console.log('Stealth address:', ethers.utils.formatEther(stealthBalanceAfterWithdraw), 'ETH');
+      console.log('Destination wallet:', ethers.utils.formatEther(destinationBalanceAfterWithdraw), 'ETH');
+      console.log('Umbra contract:', ethers.utils.formatEther(umbraBalanceAfterWithdraw), 'ETH');
+
       const txCost = withdrawTx.gasLimit.mul(withdrawReceipt.effectiveGasPrice);
       expect(expectedAmount.gt(0)).to.be.true;
       verifyEqualValues(await getEthBalance(destinationWallet.address), expectedAmount.sub(txCost));
       verifyEqualValues(await getEthBalance(stealthKeyPair.address), 0);
+    }
+  });
+
+  it('should send token, scan for it, and withdraw it via relayer', async function () {
+    // SENDER
+    // Mint Dai to sender, and approve the Umbra contract to spend their DAI
+    await mintAndApproveToken(sender, sender.address, dai, quantity);
+    // Log initial token balances for sender and receiver
+    const senderTokenBalanceBefore = await dai.balanceOf(sender.address);
+    const receiverTokenBalanceBefore = await dai.balanceOf(receiver.address);
+    console.log('Initial Sender Token balance:', ethers.utils.formatEther(senderTokenBalanceBefore), 'tokens');
+    console.log('Initial Receiver Token balance:', ethers.utils.formatEther(receiverTokenBalanceBefore), 'tokens');
+    const senderEthInitial = await getEthBalance(sender.address);
+    const receiverEthInitial = await getEthBalance(receiver.address);
+    const umbraEthInitial = await ethersProvider.getBalance(chainConfig.umbraAddress);
+    console.log('Initial Sender ETH balance:', ethers.utils.formatEther(senderEthInitial), 'ETH');
+    console.log('Initial Receiver ETH balance:', ethers.utils.formatEther(receiverEthInitial), 'ETH');
+    console.log('Initial Umbra contract ETH balance:', ethers.utils.formatEther(umbraEthInitial), 'ETH');
+
+    console.log('------------------------- SEND ----------------------------');
+    console.log('Sender is sending', ethers.utils.formatEther(quantity).toString(), 'tokens to receiver:');
+    console.log('Sender address:', sender.address);
+    console.log('Receiver address:', receiver.address);
+    console.log('-----------------------------------------------------');
+    console.log('Generate stealthKeyPair using receiver publicKey', receiver.publicKey);
+
+    const result = await umbra.send(sender, dai.address, quantity, receiver!.publicKey, overrides);
+    console.log('-----------------------------------------------------');
+    console.log('Generated stealthKeyPair [spending public key only]:', result.stealthKeyPair);
+    console.log('Stealth address:', result.stealthKeyPair.address);
+    await result.tx.wait();
+
+    const sendReceipt = await ethers.provider.getTransactionReceipt(result.tx.hash);
+    const senderTokenBalanceAfter = await dai.balanceOf(sender.address);
+    const stealthTokenBalanceAfter = await dai.balanceOf(result.stealthKeyPair.address);
+    const umbraTokenBalanceAfter = await dai.balanceOf(umbra.umbraContract.address);
+    console.log('Sender token balance after send:', ethers.utils.formatEther(senderTokenBalanceAfter), 'tokens');
+    console.log('Stealth address token balance after send:', ethers.utils.formatEther(stealthTokenBalanceAfter), 'tokens');
+    console.log('Umbra contract token balance after send:', ethers.utils.formatEther(umbraTokenBalanceAfter), 'tokens');
+    const senderEthAfterSend = await getEthBalance(sender.address);
+    const receiverEthAfterSend = await getEthBalance(receiver.address);
+    const stealthEthAfterSend = await getEthBalance(result.stealthKeyPair.address);
+    const umbraEthAfterSend = await ethersProvider.getBalance(chainConfig.umbraAddress);
+    console.log('Sender ETH balance after send:', ethers.utils.formatEther(senderEthAfterSend), 'ETH');
+    console.log('Receiver ETH balance after send:', ethers.utils.formatEther(receiverEthAfterSend), 'ETH');
+    console.log('Stealth address ETH balance after send:', ethers.utils.formatEther(stealthEthAfterSend), 'ETH');
+    console.log('Umbra contract ETH balance after send:', ethers.utils.formatEther(umbraEthAfterSend), 'ETH');
+
+    console.log('-----------------------------------------------------');
+    console.log('Send transaction details:');
+    console.log('  To:', sendReceipt.to);
+    console.log('  From:', sendReceipt.from);
+    console.log('  Block Number:', sendReceipt.blockNumber);
+    console.log('  Gas Used:', sendReceipt.gasUsed.toString());
+    console.log('  Effective Gas Price:', sendReceipt.effectiveGasPrice ? sendReceipt.effectiveGasPrice.toString() : 'N/A');
+
+    const stealthKeyPairs: KeyPair[] = [result.stealthKeyPair];
+    const usedReceivers: Wallet[] = [receiver];
+
+    for (let i = 0; i < usedReceivers.length; i++) {
+      const receiver = usedReceivers[i];
+      const stealthKeyPair = stealthKeyPairs[i];
+
+      // RECEIVER
+      console.log('------------------------- SCAN ----------------------------');
+      console.log('Receiver:', receiver.address, 'is scanning for funds with receiver viewing private key');
+      const { userAnnouncements } = await umbra.scan(receiver.publicKey, receiver.privateKey);
+      console.log('-----------------------------------------------------');
+      console.log('Found', userAnnouncements.length, 'user announcements for receiver');
+      expect(userAnnouncements.length).to.be.greaterThan(0);
+
+      // Withdraw (test regular withdrawal, so we need to transfer ETH to pay gas)
+      // Destination wallet should have a balance equal to amount sent.
+      const destinationWallet = ethers.Wallet.createRandom();
+
+      console.log('------------------------- WITHDRAW ----------------------------');
+      console.log('Generating destination wallet for withdrawal:', destinationWallet.address);
+      console.log('Funding stealth address with 1 ETH for gas.');
+      // Fund stealth address to pay for gas.
+      await sender.sendTransaction({ to: stealthKeyPair.address, value: parseEther('1') });
+      const stealthEthAfterFunding = await getEthBalance(stealthKeyPair.address);
+      const stealthTokenAfterFunding = await dai.balanceOf(stealthKeyPair.address);
+      console.log('Stealth address ETH balance after funding:', ethers.utils.formatEther(stealthEthAfterFunding), 'ETH');
+      console.log('Stealth address Token balance after funding:', ethers.utils.formatEther(stealthTokenAfterFunding), 'tokens');
+
+
+      const stealthPrivateKey = Umbra.computeStealthPrivateKey(
+        receiver.privateKey,
+        userAnnouncements[0].randomNumber
+      );
+      console.log('-----------------------------------------------------');
+      console.log('Receiver stealth private key:', stealthPrivateKey);
+      console.log('Receiver stealth address:', stealthKeyPair.address);
+
+      console.log('Initiating token withdrawal to destination wallet:', destinationWallet.address);
+      const withdrawTxToken = await umbra.withdraw(stealthPrivateKey, dai.address, destinationWallet.address);
+      await withdrawTxToken.wait();
+      const withdrawTokenReceipt = await ethers.provider.getTransactionReceipt(withdrawTxToken.hash);
+      console.log('Withdrawal (token) transaction details:');
+      console.log('  To:', withdrawTokenReceipt.to);
+      console.log('  From:', withdrawTokenReceipt.from);
+      console.log('  Block Number:', withdrawTokenReceipt.blockNumber);
+      console.log('  Gas Used:', withdrawTokenReceipt.gasUsed.toString());
+      console.log('  Effective Gas Price:', withdrawTokenReceipt.effectiveGasPrice ? withdrawTokenReceipt.effectiveGasPrice.toString() : 'N/A');
+      console.log('Verifying token balances after withdrawal...');
+      console.log('Destination wallet token balance:', ethers.utils.formatEther(await dai.balanceOf(destinationWallet.address)), 'tokens');
+      console.log('Stealth address token balance:', ethers.utils.formatEther(await dai.balanceOf(stealthKeyPair.address)), 'tokens');
+      const senderEthFinal = await getEthBalance(sender.address);
+      const receiverEthFinal = await getEthBalance(receiver.address);
+      const stealthEthFinal = await getEthBalance(result.stealthKeyPair.address);
+      const destinationEthFinal = await getEthBalance(destinationWallet.address);
+      const umbraEthFinal = await ethersProvider.getBalance(chainConfig.umbraAddress);
+      const senderTokenFinal = await dai.balanceOf(sender.address);
+      const receiverTokenFinal = await dai.balanceOf(receiver.address);
+      const stealthTokenFinal = await dai.balanceOf(result.stealthKeyPair.address);
+      const destinationTokenFinal = await dai.balanceOf(destinationWallet.address);
+      const umbraTokenFinal = await dai.balanceOf(umbra.umbraContract.address);
+      console.log('Final balances after token withdrawal:');
+      console.log('Sender ETH:', ethers.utils.formatEther(senderEthFinal), 'ETH, Token:', ethers.utils.formatEther(senderTokenFinal), 'tokens');
+      console.log('Receiver ETH:', ethers.utils.formatEther(receiverEthFinal), 'ETH, Token:', ethers.utils.formatEther(receiverTokenFinal), 'tokens');
+      console.log('Stealth address ETH:', ethers.utils.formatEther(stealthEthFinal), 'ETH, Token:', ethers.utils.formatEther(stealthTokenFinal), 'tokens');
+      console.log('Destination wallet ETH:', ethers.utils.formatEther(destinationEthFinal), 'ETH, Token:', ethers.utils.formatEther(destinationTokenFinal), 'tokens');
+      console.log('Umbra contract ETH:', ethers.utils.formatEther(umbraEthFinal), 'ETH, Token:', ethers.utils.formatEther(umbraTokenFinal), 'tokens');
+
+
+      console.log('------------------------- WITHDRAW ETH ----------------------------');
+      const initialEthBalance = await getEthBalance(stealthKeyPair.address);
+      console.log('Initial ETH balance of stealth address before ETH withdrawal:', ethers.utils.formatEther(initialEthBalance), 'ETH');
+      const withdrawTxEth = await umbra.withdraw(stealthPrivateKey, ETH_ADDRESS, destinationWallet.address);
+      await withdrawTxEth.wait();
+      const withdrawEthReceipt = await ethers.provider.getTransactionReceipt(withdrawTxEth.hash);
+      console.log('Withdrawal (ETH) transaction details:');
+      console.log('  To:', withdrawEthReceipt.to);
+      console.log('  From:', withdrawEthReceipt.from);
+      console.log('  Block Number:', withdrawEthReceipt.blockNumber);
+      console.log('  Gas Used:', withdrawEthReceipt.gasUsed.toString());
+      console.log('  Effective Gas Price:', withdrawEthReceipt.effectiveGasPrice ? withdrawEthReceipt.effectiveGasPrice.toString() : 'N/A');
+      const senderEthAfterEthWithdraw = await getEthBalance(sender.address);
+      const receiverEthAfterEthWithdraw = await getEthBalance(receiver.address);
+      const stealthEthAfterEthWithdraw = await getEthBalance(stealthKeyPair.address);
+      const destinationEthAfterEthWithdraw = await getEthBalance(destinationWallet.address);
+      const umbraEthAfterEthWithdraw = await ethersProvider.getBalance(chainConfig.umbraAddress);
+      console.log('Final ETH balances after ETH withdrawal:');
+      console.log('Sender:', ethers.utils.formatEther(senderEthAfterEthWithdraw), 'ETH');
+      console.log('Receiver:', ethers.utils.formatEther(receiverEthAfterEthWithdraw), 'ETH');
+      console.log('Stealth address:', ethers.utils.formatEther(stealthEthAfterEthWithdraw), 'ETH');
+      console.log('Destination wallet:', ethers.utils.formatEther(destinationEthAfterEthWithdraw), 'ETH');
+      console.log('Umbra contract:', ethers.utils.formatEther(umbraEthAfterEthWithdraw), 'ETH');
+      console.log('Stealth address ETH balance:', ethers.utils.formatEther(await getEthBalance(stealthKeyPair.address)));
+      console.log('Destination wallet ETH balance:', ethers.utils.formatEther(await getEthBalance(destinationWallet.address)));
     }
   });
 });
