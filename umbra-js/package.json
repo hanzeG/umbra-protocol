@@ -10,9 +10,10 @@
   ],
   "scripts": {
     "test": "yarn build && yarn hardhat test",
-    "test-sh": "yarn build && yarn hardhat test test/StealthHub.test.ts",
+    "test-w": "yarn build && yarn hardhat test test/Workflow.test.ts",
     "test-b": "yarn build && yarn hardhat test test/bench.test.ts",
     "test-u": "yarn build && yarn hardhat test test/Umbra.test.ts",
+    "test-bu": "yarn build && yarn hardhat test test/benchUmbra.test.ts",
     "coverage": "yarn clean && yarn build && nyc yarn hardhat test && sed -i'.bak' 's/SF:/SF:umbra-js\\//gI' ./coverage/lcov.info",
     "lint": "eslint --ext .js,.ts ./",
     "prettier": "prettier --write .",
@@ -29,8 +30,13 @@
   "dependencies": {
     "@noble/secp256k1": "^1.7.1",
     "@unstoppabledomains/resolution": "8.5.0",
+    "crypto": "^1.0.1",
     "ethers": "5.7.2",
-    "hardhat": "^2.22.19"
+    "ffjavascript": "^0.3.1",
+    "hardhat": "^2.22.19",
+    "murmurhash3js": "^3.0.1",
+    "poseidon2": "^0.4.2",
+    "xxhashjs": "^0.2.2"
   },
   "devDependencies": {
     "@nomiclabs/hardhat-ethers": "^2.0.2",

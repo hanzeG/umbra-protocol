@@ -1,5 +1,5 @@
 import { performance } from 'perf_hooks';
-import { expect } from 'chai';
+import { expect, util } from 'chai';
 import { ethers } from 'hardhat';
 import { Umbra } from '../src/classes/Umbra';
 import { KeyPair } from '../src/classes/KeyPair';
@@ -19,6 +19,17 @@ import {
 import type { Announcement, ChainConfig, EthersProvider, ScanOverrides, SendOverrides, SubgraphAnnouncement, UserAnnouncement, AnnouncementDetail, SendBatch, SendData } from '../src/types'; // prettier-ignore
 import { SignerWithAddress } from '@nomiclabs/hardhat-ethers/dist/src/signer-with-address';
 import { UMBRA_BATCH_SEND_ABI } from '../src/utils/constants';
+
+import { MAT_DIAG3_M_1, MAT_INTERNAL3, RC3 } from './poseidon2_constants.json';
+import { utils, getCurveFromName } from 'ffjavascript';
+import { Poseidon2, F1Field } from 'poseidon2';
+const int_MAT_DIAG3_M_1 = utils.unstringifyBigInts(MAT_DIAG3_M_1);
+const int_MAT_INTERNAL3 = utils.unstringifyBigInts(MAT_INTERNAL3);
+const int_RC3 = utils.unstringifyBigInts(RC3);
+
+import crypto from 'crypto';
+import * as XXH from "xxhashjs";
+const seed = 0xABCD;
 
 const ethersProvider = ethers.provider;
 // We don't use the 0 or 1 index just to reduce the chance of conflicting with a signer for another use case
@@ -250,8 +261,251 @@ function benchmarkIsAnnouncementForUser(umbra: Umbra, spendingPublicKey: string,
   }
 }
 
+function getPoseidon2Params(
+  t,
+  d,
+  rounds_f,
+  rounds_p,
+  mat_internal_diag_m_1,
+  mat_internal,
+  round_constants
+) {
+  const r = rounds_f / 2;
+  const rounds = rounds_f + rounds_p;
+  return {
+    t,
+    d,
+    rounds_f_beginning: r,
+    rounds_p,
+    rounds_f_end: r,
+    rounds,
+    mat_internal_diag_m_1,
+    _mat_internal: mat_internal,
+    round_constants,
+  };
+}
+
+async function poseidon2_hash(preimage) {
+  const prime = await getCurveFromName("bn128", true);
+  const F = new F1Field(prime.r);
+  const poseidon2 = new Poseidon2(
+    getPoseidon2Params(3, 5, 8, 56, int_MAT_DIAG3_M_1, int_MAT_INTERNAL3, int_RC3), F
+  );
+  return poseidon2.permute(preimage.map(x => BigInt(x)));
+}
+
+async function shBenchPrepareSend(umbra: Umbra, recipientPublicKey: string, lookupOverrides: SendOverrides = {}) {
+  const totalStart = performance.now();
+
+  // Step 1: Create KeyPair instances
+  const keyPairStart = performance.now();
+  const pubKey = recipientPublicKey;
+  const keyPair = new KeyPair(pubKey);
+  const keyPairDuration = performance.now() - keyPairStart;
+  // console.log(`KeyPair creation took: ${keyPairDuration.toFixed(4)} ms`);
+
+  // Step 2: Generate a random number
+  const randomStart = performance.now();
+  const randomNumber = new RandomNumber();
+  const randomDuration = performance.now() - randomStart;
+  // console.log(`Random number generation took: ${randomDuration.toFixed(4)} ms`);
+
+  // Step 3: Encrypt the random number using the recipient's public key
+  const encryptionStart = performance.now();
+  const encrypted = keyPair.encrypt(randomNumber);
+  const encryptionDuration = performance.now() - encryptionStart;
+  // console.log(`Encryption took: ${encryptionDuration.toFixed(4)} ms`);
+
+  // Step 4: Hash the random number
+  // const hashStart = performance.now();
+  // console.log(`Random number: ${randomNumber.asHex}`);
+  // const hashedRandomNumber = await poseidon2_hash([randomNumber.asHex, randomNumber.asHex, randomNumber.asHex]);
+  // const hashDuration = performance.now() - hashStart;
+  // console.log(`Public key compression took: ${compressDuration.toFixed(4)} ms`);
+  // console.log(`Hashed random number: ${hashedRandomNumber}`);
+
+  // Step 4.5: SHA256 Hash the random number
+  const hash256Start = performance.now();
+  // console.log(`Random number: ${randomNumber.asHex}`);
+  const hashed256RandomNumber = XXH.h32(randomNumber.asHex.toString(), seed);
+  const hash256Duration = performance.now() - hash256Start;
+  // console.log(`Public key compression took: ${compressDuration.toFixed(4)} ms`);
+  // console.log(`Hashed random number: ${hashedRandomNumber}`);
+
+  const totalDuration = performance.now() - totalStart;
+  // console.log(`Total prepareSend execution time: ${totalDuration.toFixed(4)} ms`);
+
+  return {
+    keyPair,
+    encrypted,
+    // hashedRandomNumber,
+    hashed256RandomNumber,
+    durations: {
+      keyPairDuration,
+      randomDuration,
+      encryptionDuration,
+      // hashDuration,
+      hash256Duration,
+      totalDuration
+    }
+  };
+}
+
+function shBenchmarkIsAnnouncementForUser(umbra: Umbra, privateKey: string, announcement: Announcement) {
+  let step1Duration = 0;
+  let step2Duration = 0;
+  let step3Duration = 0;
+  let step4Duration = 0;
+  try {
+    const { receiver, pkx, ciphertext } = announcement;
+
+    // Step 1: Get uncompressed public key from pkx
+    const step1Start = performance.now();
+    const uncompressedPubKey = KeyPair.getUncompressedFromX(pkx);
+    const step1End = performance.now();
+    step1Duration = step1End - step1Start;
+
+    // Step 2: Decrypt payload to get random number
+    const step2Start = performance.now();
+    const payload = { ephemeralPublicKey: uncompressedPubKey, ciphertext };
+    const keyPair = new KeyPair(privateKey);
+    const randomNumber = keyPair.decrypt(payload);
+    const step2End = performance.now();
+    step2Duration = step2End - step2Start;
+
+    // Step 3: Compute SHA 256 hash
+    const step3Start = performance.now();
+    const computedHash = XXH.h32(randomNumber.toString(), seed);
+    const step3End = performance.now();
+    step3Duration = step3End - step3Start;
+
+    // Step 4: Compare computed hash with ciphertext
+    const hashCipher = computedHash;
+    const step4Start = performance.now();
+    const isForUser = computedHash === hashCipher;
+    const step4End = performance.now();
+    step4Duration = step4End - step4Start;
+
+    return {
+      isForUser,
+      randomNumber,
+      durations: {
+        step1Duration,
+        step2Duration,
+        step3Duration,
+        step4Duration
+      }
+    };
+  } catch (err) {
+    return {
+      isForUser: false,
+      randomNumber: '',
+      durations: {
+        step1Duration: 0,
+        step2Duration: 0,
+        step3Duration: 0,
+        step4Duration: 0
+      }
+    };
+  }
+}
+
+async function shBenchmarkScan(
+  umbra: Umbra,
+  publicKey: string,
+  maxBatches: number = 3,
+  overrides: ScanOverrides = {}
+) {
+  const totalStart = performance.now();
+  const batchRetrievalDurations: number[] = [];
+  // const announcementProcessingDurations: number[] = [];
+  const isAnnouncementStep1Durations: number[] = [];
+  const isAnnouncementStep2Durations: number[] = [];
+  const isAnnouncementStep3Durations: number[] = [];
+  const isAnnouncementStep4Durations: number[] = [];
+  const isAnnouncementTotalDurations: number[] = [];
+  const userAnnouncements: UserAnnouncement[] = [];
+  let totalAnnouncementsCount = 0;
+  let processedBatches = 0;
+
+  // Create an iterator for fetchAllAnnouncements to measure retrieval time per batch
+  const announcementsIterator = umbra.fetchAllAnnouncements(overrides);
+  while (true) {
+    const batchStart = performance.now();
+    const { value: announcementsBatch, done } = await announcementsIterator.next();
+    const batchEnd = performance.now();
+    if (done) break;
+    const batchRetrievalTime = batchEnd - batchStart;
+    batchRetrievalDurations.push(batchRetrievalTime);
+
+    // Process each announcement in the batch using the benchmarkIsAnnouncementForUser function
+    for (const announcement of announcementsBatch) {
+      const result = shBenchmarkIsAnnouncementForUser(umbra, publicKey, announcement);
+      isAnnouncementStep1Durations.push(result.durations.step1Duration);
+      isAnnouncementStep2Durations.push(result.durations.step2Duration);
+      isAnnouncementStep3Durations.push(result.durations.step3Duration);
+      isAnnouncementStep4Durations.push(result.durations.step4Duration);
+      const totalOperationTime = result.durations.step1Duration + result.durations.step2Duration + result.durations.step3Duration + result.durations.step4Duration;
+      isAnnouncementTotalDurations.push(totalOperationTime);
+      totalAnnouncementsCount++;
+
+      if (result.isForUser) {
+        const token = getAddress(announcement.token);
+        const isWithdrawn = false;
+        userAnnouncements.push({
+          randomNumber: result.randomNumber,
+          receiver: announcement.receiver,
+          amount: announcement.amount,
+          token,
+          from: announcement.from,
+          txHash: announcement.txHash,
+          timestamp: announcement.timestamp,
+          isWithdrawn
+        });
+      }
+    }
+    processedBatches++;
+    if (processedBatches >= maxBatches) break;
+  }
+
+  const totalScanTime = performance.now() - totalStart;
+  const averageBatchRetrievalTime =
+    batchRetrievalDurations.length > 0
+      ? batchRetrievalDurations.reduce((a, b) => a + b, 0) / batchRetrievalDurations.length
+      : 0;
+
+  return {
+    userAnnouncements,
+    durations: {
+      totalScanTime,
+      averageBatchRetrievalTime,
+      batchRetrievalDurations,
+      isAnnouncementStep1Durations,
+      isAnnouncementStep2Durations,
+      isAnnouncementStep3Durations,
+      isAnnouncementStep4Durations,
+      averageIsAnnouncementStep1: isAnnouncementStep1Durations.length
+        ? isAnnouncementStep1Durations.reduce((a, b) => a + b, 0) / isAnnouncementStep1Durations.length
+        : 0,
+      averageIsAnnouncementStep2: isAnnouncementStep2Durations.length
+        ? isAnnouncementStep2Durations.reduce((a, b) => a + b, 0) / isAnnouncementStep2Durations.length
+        : 0,
+      averageIsAnnouncementStep3: isAnnouncementStep3Durations.length
+        ? isAnnouncementStep3Durations.reduce((a, b) => a + b, 0) / isAnnouncementStep3Durations.length
+        : 0,
+      averageIsAnnouncementStep4: isAnnouncementStep4Durations.length
+        ? isAnnouncementStep4Durations.reduce((a, b) => a + b, 0) / isAnnouncementStep4Durations.length
+        : 0,
+      isAnnouncementTotalDurations,
+      averageIsAnnouncementTotal: isAnnouncementTotalDurations.length
+        ? isAnnouncementTotalDurations.reduce((a, b) => a + b, 0) / isAnnouncementTotalDurations.length
+        : 0,
+    }
+  };
+}
+
 // Example test case to benchmark each operation in prepareSend
-describe('Benchmark prepareSend Operations', function () {
+describe('Benchmark Operations', function () {
   let sender: Wallet;
   let receiver: Wallet;
   let receivers: Wallet[] = [];
@@ -400,4 +654,90 @@ describe('Benchmark prepareSend Operations', function () {
       console.log(`Total scan execution time: ${computeAverageWithoutMinMax(totalScanTimes).toFixed(4)} ms`);
     }
   });
+
+  it('should benchmark all steps of shBenchPrepareSend', async function () {
+    const iterations = 100;
+    const keyPairDurations: number[] = [];
+    const randomDurations: number[] = [];
+    const encryptionDurations: number[] = [];
+    // const hashDurations: number[] = [];
+    const hash256Durations: number[] = [];
+    const totalDurations: number[] = [];
+    // let lastHashedRandomNumber: any;
+
+    for (let i = 0; i < iterations; i++) {
+      const result = await shBenchPrepareSend(umbra, receiver.publicKey.toString());
+      keyPairDurations.push(result.durations.keyPairDuration);
+      randomDurations.push(result.durations.randomDuration);
+      encryptionDurations.push(result.durations.encryptionDuration);
+      // hashDurations.push(result.durations.hashDuration);
+      hash256Durations.push(result.durations.hash256Duration);
+      totalDurations.push(result.durations.totalDuration);
+
+      // lastHashedRandomNumber = result.hashedRandomNumber;
+    }
+
+    console.log(`\nAverages over ${iterations - 2} iterations (excluding the fastest and slowest):`);
+    console.log(`KeyPair creation: ${computeAverageWithoutMinMax(keyPairDurations).toFixed(4)} ms`);
+    console.log(`Random number generation: ${computeAverageWithoutMinMax(randomDurations).toFixed(4)} ms`);
+    console.log(`Encryption: ${computeAverageWithoutMinMax(encryptionDurations).toFixed(4)} ms`);
+    // console.log(`Hash computation: ${computeAverageWithoutMinMax(hashDurations).toFixed(4)} ms`);
+    console.log(`SHA256 Hash computation: ${computeAverageWithoutMinMax(hash256Durations).toFixed(4)} ms`);
+    console.log(`Total shBenchPrepareSend execution time: ${computeAverageWithoutMinMax(totalDurations).toFixed(4)} ms`);
+  });
+
+  it('should benchmark scan function performance over multiple iterations', async function () {
+    const iterations = 100;
+    const avgStepTotalTimes: number[] = [];
+    const totalScanTimes: number[] = [];
+    const avgBatchRetrievalTimes: number[] = [];
+    const avgStep1Times: number[] = [];
+    const avgStep2Times: number[] = [];
+    const avgStep3Times: number[] = [];
+    const avgStep4Times: number[] = [];
+
+    let stealthKeyPairs: KeyPair[] = [];
+    let usedReceivers: Wallet[] = [];
+
+    // Send some announcements to the receiver
+    const { tx, stealthKeyPair } = await umbra.send(
+      sender,
+      ETH_ADDRESS,
+      quantity,
+      receiver!.publicKey,
+      overrides
+    );
+    await tx.wait();
+    verifyEqualValues(await getEthBalance(stealthKeyPair.address), quantity);
+    stealthKeyPairs = [stealthKeyPair];
+    usedReceivers = [receiver];
+
+    for (let i = 0; i < usedReceivers.length; i++) {
+      const expectedAmount = quantity;
+      const receiver = usedReceivers[i];
+      const stealthKeyPair = stealthKeyPairs[i];
+      verifyEqualValues(await getEthBalance(stealthKeyPair.address), expectedAmount);
+
+      for (let j = 0; j < iterations; j++) {
+        const result = await shBenchmarkScan(umbra, receiver.privateKey);
+        totalScanTimes.push(result.durations.totalScanTime);
+        avgBatchRetrievalTimes.push(result.durations.averageBatchRetrievalTime);
+        avgStep1Times.push(result.durations.averageIsAnnouncementStep1);
+        avgStep2Times.push(result.durations.averageIsAnnouncementStep2);
+        avgStep3Times.push(result.durations.averageIsAnnouncementStep3);
+        avgStep4Times.push(result.durations.averageIsAnnouncementStep4);
+        avgStepTotalTimes.push(result.durations.averageIsAnnouncementTotal);
+      }
+
+      console.log(`\nAverages over ${iterations - 2} iterations (excluding the fastest and slowest):`);
+      console.log(`Average batch retrieval time: ${computeAverageWithoutMinMax(avgBatchRetrievalTimes).toFixed(4)} ms`);
+      console.log(`Average Step 1 (Get uncompressed public key): ${computeAverageWithoutMinMax(avgStep1Times).toFixed(4)} ms`);
+      console.log(`Average Step 2 (Decrypt payload): ${computeAverageWithoutMinMax(avgStep2Times).toFixed(4)} ms`);
+      console.log(`Average Step 3 (Compute hash value using SHA256): ${computeAverageWithoutMinMax(avgStep3Times).toFixed(4)} ms`);
+      console.log(`Average Step 4 (Comparison): ${computeAverageWithoutMinMax(avgStep4Times).toFixed(4)} ms`);
+      console.log(`Average total IsAnnouncementForUser runtime (Step 1+2+3+4): ${computeAverageWithoutMinMax(avgStepTotalTimes).toFixed(4)} ms`);
+      console.log(`Total scan execution time: ${computeAverageWithoutMinMax(totalScanTimes).toFixed(4)} ms`);
+    }
+  });
+
 });
