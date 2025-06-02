@@ -50,11 +50,7 @@ contract Umbra is Ownable {
    * @param _tollCollector Address that can sweep collected funds
    * @param _tollReceiver Address that receives collected funds
    */
-  constructor(
-    uint256 _toll,
-    address _tollCollector,
-    address payable _tollReceiver
-  ) {
+  constructor(uint256 _toll, address _tollCollector, address payable _tollReceiver) {
     toll = _toll;
     tollCollector = _tollCollector;
     tollReceiver = _tollReceiver;
@@ -307,15 +303,14 @@ contract Umbra is Ownable {
       _chainId := chainid()
     }
 
-    bytes32 _digest =
-      keccak256(
-        abi.encodePacked(
-          "\x19Ethereum Signed Message:\n32",
-          keccak256(
-            abi.encode(_chainId, address(this), _acceptor, _tokenAddr, _sponsor, _sponsorFee, address(_hook), _data)
-          )
+    bytes32 _digest = keccak256(
+      abi.encodePacked(
+        "\x19Ethereum Signed Message:\n32",
+        keccak256(
+          abi.encode(_chainId, address(this), _acceptor, _tokenAddr, _sponsor, _sponsorFee, address(_hook), _data)
         )
-      );
+      )
+    );
 
     address _recoveredAddress = ecrecover(_digest, _v, _r, _s);
     require(_recoveredAddress != address(0) && _recoveredAddress == _stealthAddr, "Umbra: Invalid Signature");
